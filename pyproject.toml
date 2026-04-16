@@ -16,6 +16,8 @@ dependencies = [
     "stripe>=7.0",
     "structlog>=23.0",
     "rich>=13.0",
+    "fastapi>=0.111",
+    "uvicorn>=0.29",
 ]
 
 [project.optional-dependencies]

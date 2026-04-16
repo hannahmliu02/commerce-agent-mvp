@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TrustX Agent</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { DEFAULT: '#6366f1', light: '#818cf8', dark: '#4338ca' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    .step-dot { transition: all 0.3s ease; }
+    .fade-in { animation: fadeIn 0.25s ease-in; }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .card { @apply bg-white rounded-2xl shadow-sm border border-slate-100 p-6; }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 font-sans text-slate-800">
+
+<!-- ── Modal overlay (hidden by default) ──────────────────────────────── -->
+<div id="modal-backdrop" class="fixed inset-0 bg-black/40 backdrop-blur-sm z-40 hidden flex items-center justify-center">
+  <div id="modal" class="bg-white rounded-3xl shadow-2xl w-full max-w-2xl mx-4 overflow-hidden z-50 fade-in">
+
+    <!-- Modal header -->
+    <div id="modal-header" class="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+      <div class="flex items-center gap-3">
+        <span id="modal-agent-emoji" class="text-2xl">🛍️</span>
+        <div>
+          <p class="font-semibold text-base" id="modal-agent-name">TrustX Agent</p>
+          <p class="text-xs text-slate-400" id="modal-session-id">—</p>
+        </div>
+      </div>
+      <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 text-xl leading-none">✕</button>
+    </div>
+
+    <!-- Step progress bar -->
+    <div class="px-6 py-3 bg-slate-50 border-b border-slate-100">
+      <div class="flex items-center gap-2">
+        <template id="step-template"></template>
+        <div id="step-bar" class="flex items-center gap-1 w-full"></div>
+      </div>
+    </div>
+
+    <!-- Modal body — swapped by each step -->
+    <div id="modal-body" class="px-6 py-6 min-h-[320px] fade-in">
+      <p class="text-slate-400 text-sm">Loading…</p>
+    </div>
+
+    <!-- Modal footer -->
+    <div id="modal-footer" class="px-6 py-4 border-t border-slate-100 flex justify-end gap-3">
+      <!-- buttons injected per step -->
+    </div>
+  </div>
+</div>
+
+<!-- ── Main page ──────────────────────────────────────────────────────── -->
+<main class="max-w-4xl mx-auto px-4 py-16">
+
+  <!-- Hero -->
+  <div class="text-center mb-12">
+    <div class="inline-flex items-center gap-2 bg-brand/10 text-brand text-sm font-medium px-4 py-1.5 rounded-full mb-4">
+      <span>⚡</span> Governed agentic commerce
+    </div>
+    <h1 class="text-4xl font-bold tracking-tight mb-3">TrustX Agent</h1>
+    <p class="text-slate-500 text-lg max-w-xl mx-auto">
+      AI-powered purchasing with authority boundaries, audit trails, and governance built in.
+    </p>
+  </div>
+
+  <!-- Agent cards -->
+  <div id="agent-grid" class="grid sm:grid-cols-2 gap-4 mb-10">
+    <div class="card animate-pulse h-36"></div>
+    <div class="card animate-pulse h-36"></div>
+  </div>
+
+  <!-- How it works -->
+  <div class="card mt-8">
+    <h2 class="font-semibold text-sm uppercase tracking-wider text-slate-400 mb-4">How it works</h2>
+    <div class="grid sm:grid-cols-5 gap-3 text-center text-xs text-slate-500">
+      <div v-for="s in steps" class="flex flex-col items-center gap-1">
+        <div class="w-8 h-8 rounded-full bg-brand/10 text-brand flex items-center justify-center font-bold text-sm">1</div>
+        <span>Product Discovery</span>
+      </div>
+      <div class="flex flex-col items-center gap-1">
+        <div class="w-8 h-8 rounded-full bg-brand/10 text-brand flex items-center justify-center font-bold text-sm">2</div>
+        <span>Select Product</span>
+      </div>
+      <div class="flex flex-col items-center gap-1">
+        <div class="w-8 h-8 rounded-full bg-yellow-100 text-yellow-600 flex items-center justify-center font-bold text-sm">3</div>
+        <span>Consumer Approval</span>
+      </div>
+      <div class="flex flex-col items-center gap-1">
+        <div class="w-8 h-8 rounded-full bg-green-100 text-green-600 flex items-center justify-center font-bold text-sm">4</div>
+        <span>Payment</span>
+      </div>
+      <div class="flex flex-col items-center gap-1">
+        <div class="w-8 h-8 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center font-bold text-sm">5</div>
+        <span>Audit Finalization</span>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+const API = '';  // same-origin; change to 'http://localhost:8000' for dev
+let state = {
+  session: null,     // { session_id, agent, emoji, color, limits }
+  step: 0,           // 0=agent pick, 1=search, 2=select, 3=approve, 4=pay, 5=done
+  products: [],
+  selectedProduct: null,
+  query: '',
+};
+
+const STEPS = [
+  { id: 1, label: 'Search' },
+  { id: 2, label: 'Select' },
+  { id: 3, label: 'Approve' },
+  { id: 4, label: 'Pay' },
+  { id: 5, label: 'Done' },
+];
+
+// ── Bootstrap ──────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', loadAgents);
+
+async function loadAgents() {
+  const res = await fetch(`${API}/agents`);
+  const agents = await res.json();
+  renderAgentCards(agents);
+}
+
+function renderAgentCards(agents) {
+  const grid = document.getElementById('agent-grid');
+  grid.innerHTML = '';
+  agents.forEach(agent => {
+    const colorMap = { cyan: '#06b6d4', magenta: '#d946ef', green: '#22c55e', yellow: '#eab308', blue: '#3b82f6' };
+    const hex = colorMap[agent.color] || '#6366f1';
+    const card = document.createElement('div');
+    card.className = 'card cursor-pointer hover:shadow-md hover:-translate-y-0.5 transition-all group';
+    card.innerHTML = `
+      <div class="flex items-start gap-3 mb-3">
+        <span class="text-3xl">${agent.emoji}</span>
+        <div>
+          <p class="font-semibold text-base group-hover:text-brand transition-colors">${agent.name}</p>
+          <p class="text-xs text-slate-400">${agent.tagline}</p>
+        </div>
+        ${agent.custom ? '<span class="ml-auto text-xs bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">custom</span>' : ''}
+      </div>
+      <p class="text-sm text-slate-500 mb-4 leading-relaxed">${agent.description}</p>
+      <div class="flex gap-4 text-xs text-slate-400">
+        <span>Per-action <strong class="text-slate-600">$${agent.max_per_action.toLocaleString()}</strong></span>
+        <span>Session cap <strong class="text-slate-600">$${agent.max_cumulative.toLocaleString()}</strong></span>
+        <span>Approval above <strong class="text-slate-600">$${agent.requires_approval_above}</strong></span>
+      </div>
+    `;
+    card.style.borderTop = `3px solid ${hex}`;
+    card.onclick = () => startSession(agent.key);
+    grid.appendChild(card);
+  });
+}
+
+// ── Modal helpers ──────────────────────────────────────────────────────────
+function openModal() {
+  document.getElementById('modal-backdrop').classList.remove('hidden');
+  document.getElementById('modal-backdrop').classList.add('flex');
+}
+
+function closeModal() {
+  document.getElementById('modal-backdrop').classList.add('hidden');
+  document.getElementById('modal-backdrop').classList.remove('flex');
+  state = { session: null, step: 0, products: [], selectedProduct: null, query: '' };
+}
+
+function setModalHeader(name, emoji, sessionId) {
+  document.getElementById('modal-agent-name').textContent = name;
+  document.getElementById('modal-agent-emoji').textContent = emoji;
+  document.getElementById('modal-session-id').textContent = sessionId || '—';
+}
+
+function setBody(html) {
+  const body = document.getElementById('modal-body');
+  body.innerHTML = html;
+  body.classList.remove('fade-in');
+  void body.offsetWidth;
+  body.classList.add('fade-in');
+}
+
+function setFooter(html) {
+  document.getElementById('modal-footer').innerHTML = html;
+}
+
+function updateStepBar(activeStep) {
+  const bar = document.getElementById('step-bar');
+  bar.innerHTML = STEPS.map(s => {
+    const done = s.id < activeStep;
+    const active = s.id === activeStep;
+    const base = 'flex-1 flex flex-col items-center gap-1';
+    const dotBase = 'w-6 h-6 rounded-full text-xs flex items-center justify-center font-bold';
+    const dot = done
+      ? `<div class="${dotBase} bg-brand text-white">✓</div>`
+      : active
+        ? `<div class="${dotBase} bg-brand text-white ring-2 ring-brand/30">${s.id}</div>`
+        : `<div class="${dotBase} bg-slate-200 text-slate-400">${s.id}</div>`;
+    const label = `<span class="text-[10px] ${active ? 'text-brand font-semibold' : done ? 'text-brand' : 'text-slate-400'}">${s.label}</span>`;
+    return `<div class="${base}">${dot}${label}</div>`;
+  }).join('<div class="flex-1 h-px bg-slate-200 mb-3"></div>');
+}
+
+// ── Flow steps ─────────────────────────────────────────────────────────────
+async function startSession(agentKey) {
+  openModal();
+  setBody('<p class="text-slate-400 text-sm">Starting session…</p>');
+  setFooter('');
+
+  const res = await fetch(`${API}/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ agent: agentKey }),
+  });
+  state.session = await res.json();
+  setModalHeader(state.session.agent, state.session.emoji, state.session.session_id);
+  state.step = 1;
+  renderStep1();
+}
+
+// ── Animated governance checklist ─────────────────────────────────────────
+//
+// Usage:
+//   const result = await runWithChecks(checks, apiPromise, { title, subtitle })
+//   checks: [{ label, detail }]   — shown in order, one per guard
+//   apiPromise: the fetch() call, started immediately in parallel
+//   Returns the resolved api response data, or throws on error.
+
+function renderChecklist(checks, title, subtitle) {
+  const items = checks.map((c, i) => `
+    <div id="chk-${i}" class="flex items-center gap-3 py-2.5 border-t border-slate-100 first:border-0 transition-all">
+      <div id="chk-icon-${i}" class="w-5 h-5 flex items-center justify-center flex-shrink-0">
+        <div class="w-4 h-4 rounded-full bg-slate-200"></div>
+      </div>
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-medium text-slate-500" id="chk-label-${i}">${c.label}</p>
+        <p class="text-xs text-slate-400">${c.detail}</p>
+      </div>
+    </div>`).join('');
+
+  setBody(`
+    <div class="mb-4">
+      <p class="font-semibold text-base">${title}</p>
+      <p class="text-sm text-slate-400 mt-0.5">${subtitle}</p>
+    </div>
+    <div id="checklist" class="bg-slate-50 rounded-xl px-4 py-1">
+      ${items}
+    </div>
+  `);
+  setFooter('');
+}
+
+function setCheckState(i, state_) {
+  // state_: 'pending' | 'running' | 'pass' | 'fail'
+  const icon = document.getElementById(`chk-icon-${i}`);
+  const label = document.getElementById(`chk-label-${i}`);
+  if (!icon) return;
+
+  const icons = {
+    pending: `<div class="w-4 h-4 rounded-full bg-slate-200"></div>`,
+    running: `<div class="w-4 h-4 border-2 border-slate-300 border-t-brand rounded-full animate-spin"></div>`,
+    pass:    `<div class="w-5 h-5 rounded-full bg-green-500 flex items-center justify-center text-white text-[10px] font-bold">✓</div>`,
+    fail:    `<div class="w-5 h-5 rounded-full bg-red-500 flex items-center justify-center text-white text-[10px] font-bold">✗</div>`,
+  };
+  icon.innerHTML = icons[state_] || icons.pending;
+  if (label) {
+    label.className = `text-sm font-medium transition-colors ${
+      state_ === 'pass' ? 'text-green-700' :
+      state_ === 'fail' ? 'text-red-600' :
+      state_ === 'running' ? 'text-slate-700' : 'text-slate-400'
+    }`;
+  }
+}
+
+async function runWithChecks(checks, apiPromise, { title, subtitle = 'Running governance pipeline…' } = {}) {
+  renderChecklist(checks, title, subtitle);
+
+  // Kick off the real API call immediately (runs in parallel with the animation)
+  let apiResult = null;
+  let apiError = null;
+  const apiFlight = apiPromise
+    .then(r => { apiResult = r; })
+    .catch(e => { apiError = e; });
+
+  const STEP_MS = 320;  // time per check before the API resolves
+
+  for (let i = 0; i < checks.length; i++) {
+    setCheckState(i, 'running');
+
+    // If this is the last check, wait for the real API
+    if (i === checks.length - 1) {
+      await apiFlight;
+    } else {
+      // For earlier checks, advance after STEP_MS or when API finishes, whichever is later
+      await Promise.all([
+        apiFlight.catch(() => {}),
+        new Promise(r => setTimeout(r, STEP_MS * (i + 1))),
+      ]).then(() => new Promise(r => setTimeout(r, 80)));
+    }
+
+    if (apiError) {
+      setCheckState(i, 'fail');
+      for (let j = i + 1; j < checks.length; j++) setCheckState(j, 'pending');
+      throw apiError;
+    }
+    setCheckState(i, 'pass');
+  }
+
+  return apiResult;
+}
+
+// ── Step 1 — Search ────────────────────────────────────────────────────────
+function renderStep1() {
+  updateStepBar(1);
+  setBody(`
+    <h2 class="font-semibold text-base mb-1">What would you like to find?</h2>
+    <p class="text-sm text-slate-400 mb-4">Search the catalog or browse everything.</p>
+    <input id="search-input" type="text" value="${state.query}"
+      placeholder="e.g. headphones, shoes…"
+      class="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40 mb-4" />
+    <div id="product-list" class="space-y-2 text-sm"></div>
+  `);
+  setFooter(`
+    <button onclick="closeModal()" class="px-4 py-2 text-sm text-slate-500 hover:text-slate-700">Cancel</button>
+    <button onclick="doSearch()" class="px-5 py-2 bg-brand text-white text-sm font-medium rounded-xl hover:bg-brand-dark transition-colors">Search</button>
+  `);
+  document.getElementById('search-input').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+  if (state.products.length) renderProductList(state.products);
+}
+
+async function doSearch() {
+  const query = document.getElementById('search-input').value.trim();
+  state.query = query;
+
+  // Run governance-checked discovery step (blocks on prompt injection)
+  const govRes = await fetch(`${API}/sessions/${state.session.session_id}/steps/product_discovery`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+  });
+  if (!govRes.ok) {
+    const err = await govRes.json();
+    setBody(`
+      <div class="text-center py-6">
+        <p class="text-3xl mb-2">🛡️</p>
+        <p class="font-semibold text-red-600">Query blocked by governance</p>
+        <p class="text-sm text-slate-400 mt-1">${err.detail || 'Request blocked'}</p>
+      </div>`);
+    setFooter(`<button onclick="renderStep1()" class="px-4 py-2 text-sm text-brand">← Try again</button>`);
+    return;
+  }
+
+  const res = await fetch(`${API}/sessions/${state.session.session_id}/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query }),
+  });
+  const data = await res.json();
+  state.products = data.products;
+
+  renderStep1();
+  renderProductList(data.products);
+}
+
+function renderProductList(products) {
+  const list = document.getElementById('product-list');
+  if (!list) return;
+  list.innerHTML = products.map(p => `
+    <div onclick="selectProduct('${p.id}')"
+      class="flex items-center justify-between p-3 rounded-xl border border-slate-100 hover:border-brand/40 hover:bg-brand/5 cursor-pointer transition-all group">
+      <div>
+        <p class="font-medium group-hover:text-brand transition-colors">${p.name}</p>
+        <p class="text-xs text-slate-400">${p.category} · ID: ${p.id}</p>
+      </div>
+      <span class="font-semibold text-slate-700">$${p.price.toFixed(2)}</span>
+    </div>
+  `).join('');
+}
+
+// ── Step 2 — Select ────────────────────────────────────────────────────────
+async function selectProduct(productId) {
+  state.selectedProduct = state.products.find(p => p.id === productId);
+  updateStepBar(2);
+  setBody(`<p class="text-slate-400 text-sm">Selecting product…</p>`);
+  setFooter('');
+
+  const res = await fetch(`${API}/sessions/${state.session.session_id}/steps/product_selection`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ product_id: productId }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    setBody(`<p class="text-red-500 text-sm">Error: ${err.detail}</p>`);
+    setFooter(`<button onclick="renderStep1()" class="px-4 py-2 text-sm text-brand">← Back</button>`);
+    return;
+  }
+  state.step = 2;
+  renderStep3();
+}
+
+// ── Step 3 — Approve ───────────────────────────────────────────────────────
+function renderStep3() {
+  updateStepBar(3);
+  const p = state.selectedProduct;
+  const limits = state.session.limits;
+  const needsApproval = p.price > limits.requires_approval_above;
+  setBody(`
+    <h2 class="font-semibold text-base mb-1">Review your order</h2>
+    <p class="text-sm text-slate-400 mb-4">Confirm the details before payment.</p>
+    <div class="bg-slate-50 rounded-xl p-4 space-y-2 text-sm mb-4">
+      <div class="flex justify-between"><span class="text-slate-500">Product</span><span class="font-medium">${p.name}</span></div>
+      <div class="flex justify-between"><span class="text-slate-500">Category</span><span>${p.category}</span></div>
+      <div class="flex justify-between"><span class="text-slate-500">Product ID</span><span class="font-mono text-xs">${p.id}</span></div>
+      <div class="flex justify-between border-t border-slate-200 pt-2 mt-2"><span class="font-semibold">Total</span><span class="font-bold text-green-600">$${p.price.toFixed(2)}</span></div>
+    </div>
+    ${needsApproval ? `
+    <div class="flex items-start gap-2 text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-xl p-3">
+      <span>⚠</span>
+      <span>Amount exceeds $${limits.requires_approval_above} approval threshold — your explicit confirmation is required.</span>
+    </div>` : `
+    <div class="flex items-start gap-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-xl p-3">
+      <span>✓</span>
+      <span>Amount is below the $${limits.requires_approval_above} threshold — this can be auto-approved.</span>
+    </div>`}
+  `);
+  setFooter(`
+    <button onclick="renderStep1()" class="px-4 py-2 text-sm text-slate-500 hover:text-slate-700">← Back</button>
+    <button onclick="doApprove(false)" class="px-4 py-2 text-sm text-red-500 hover:text-red-700">Decline</button>
+    <button onclick="doApprove(true)" class="px-5 py-2 bg-brand text-white text-sm font-medium rounded-xl hover:bg-brand-dark transition-colors">Confirm purchase</button>
+  `);
+}
+
+async function doApprove(confirmed) {
+  updateStepBar(3);
+  setBody(`<p class="text-slate-400 text-sm">${confirmed ? 'Confirming…' : 'Declining…'}</p>`);
+  setFooter('');
+
+  const res = await fetch(`${API}/sessions/${state.session.session_id}/steps/consumer_approval`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmed }),
+  });
+  const data = await res.json();
+  if (data.cancelled) {
+    setBody(`
+      <div class="text-center py-8">
+        <p class="text-2xl mb-2">👋</p>
+        <p class="font-semibold">Purchase declined</p>
+        <p class="text-sm text-slate-400 mt-1">Your session has been closed.</p>
+      </div>`);
+    setFooter(`<button onclick="closeModal()" class="px-5 py-2 bg-slate-100 text-slate-700 text-sm rounded-xl">Close</button>`);
+    return;
+  }
+  state.step = 3;
+  renderStep4();
+}
+
+// ── Step 4 — Payment ───────────────────────────────────────────────────────
+async function renderStep4() {
+  updateStepBar(4);
+
+  const checks = [
+    { label: 'Prompt Injection Guard',  detail: 'Final inbound scan before payment' },
+    { label: 'PII Shield',              detail: 'Ensuring no sensitive data leaves the agent' },
+    { label: 'Mandate Enforcer',        detail: 'Verifying payment amount within session cap' },
+    { label: 'TAP Signature',           detail: 'Signing request with RFC 9421 (Ed25519)' },
+    { label: 'MAP Token',               detail: 'Validating Mastercard Agentic Token governance metadata' },
+    { label: 'Stripe Payment',          detail: `Charging $${state.selectedProduct.price.toFixed(2)} via PaymentIntent` },
+  ];
+
+  const paymentCall = fetch(`${API}/sessions/${state.session.session_id}/steps/payment_execution`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ amount: state.selectedProduct.price }),
+  }).then(async r => {
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || 'Payment failed'); }
+    return r.json();
+  });
+
+  try {
+    await runWithChecks(checks, paymentCall, {
+      title: 'Processing payment',
+      subtitle: 'All governance checks must pass before funds move',
+    });
+  } catch (err) {
+    setBody(`<p class="text-red-500 text-sm">Payment error: ${err.message}</p>`);
+    setFooter(`<button onclick="closeModal()" class="px-5 py-2 bg-slate-100 text-slate-700 text-sm rounded-xl">Close</button>`);
+    return;
+  }
+
+  await new Promise(r => setTimeout(r, 400));
+  state.step = 4;
+  renderStep5();
+}
+
+// Step 5 — Audit
+async function renderStep5() {
+  updateStepBar(5);
+  setBody(`<p class="text-slate-400 text-sm">Finalizing audit…</p>`);
+  setFooter('');
+
+  await fetch(`${API}/sessions/${state.session.session_id}/steps/audit_finalization`, { method: 'POST' });
+
+  // Show the same 6 payment checks from step 4, all confirmed passed
+  const paymentChecks = [
+    { label: 'Prompt Injection Guard',  detail: 'Final inbound scan before payment' },
+    { label: 'PII Shield',              detail: 'No sensitive data left the agent' },
+    { label: 'Mandate Enforcer',        detail: `Payment within session cap` },
+    { label: 'TAP Signature',           detail: 'RFC 9421 request signature verified' },
+    { label: 'MAP Token',               detail: 'Mastercard Agentic Token governance passed' },
+    { label: 'Stripe Payment',          detail: `$${state.selectedProduct.price.toFixed(2)} charged via PaymentIntent` },
+  ];
+
+  const rows = paymentChecks.map(c => `
+    <div class="flex items-center gap-3 py-2.5 border-t border-slate-100 first:border-0">
+      <div class="w-5 h-5 rounded-full bg-green-500 flex items-center justify-center text-white text-[10px] font-bold flex-shrink-0">✓</div>
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-medium text-green-700">${c.label}</p>
+        <p class="text-xs text-slate-400">${c.detail}</p>
+      </div>
+    </div>`).join('');
+
+  setBody(`
+    <div class="text-center mb-5">
+      <div class="inline-flex items-center justify-center w-14 h-14 rounded-full bg-green-100 text-3xl mb-3">✓</div>
+      <h2 class="font-semibold text-lg">Purchase complete</h2>
+      <p class="text-sm text-slate-400 mt-1">${state.selectedProduct.name} · <span class="font-medium text-slate-600">$${state.selectedProduct.price.toFixed(2)}</span></p>
+    </div>
+    <div class="bg-slate-50 rounded-xl px-4 py-1">
+      <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider pt-3 pb-1">Payment governance checks</p>
+      ${rows}
+    </div>
+  `);
+  setFooter(`
+    <button onclick="closeModal()" class="px-5 py-2 bg-brand text-white text-sm font-medium rounded-xl hover:bg-brand-dark transition-colors">Done</button>
+  `);
+}
+</script>
+</body>
+</html>

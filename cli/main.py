@@ -199,9 +199,12 @@ async def _run_interactive(agent_name: Optional[str]) -> None:
             ("p003", "USB-C Hub", "$49.99", "electronics"),
             ("p004", "Yoga Mat", "$35.00", "sports"),
         ]
-        for pid, name, price, cat in mock_catalog:
-            if not query or query.lower() in name.lower():
-                products_table.add_row(pid, name, price, cat)
+        matched = [row for row in mock_catalog if query.lower() in row[1].lower()]
+        display_rows = matched if matched else mock_catalog
+        for pid, name, price, cat in display_rows:
+            products_table.add_row(pid, name, price, cat)
+        if not matched and query:
+            _info(f"No exact matches for '{query}' — showing full catalog")
         console.print(Padding(products_table, (0, 4)))
     except PipelineBlockedError as exc:
         _err(f"Request blocked by governance: {exc.reason}")
@@ -587,6 +590,34 @@ async def _serve_stdio(domain: str, agent_name: str) -> None:
 
     server = AgentMCPServer(CommerceSessionFactory())
     await server.run_stdio()
+
+
+# ---------------------------------------------------------------------------
+# web  (launch the browser-based UI)
+# ---------------------------------------------------------------------------
+
+
+@cli.command()
+@click.option("--host", default="127.0.0.1", help="Bind address (default 127.0.0.1).")
+@click.option("--port", default=8000, help="Port to listen on (default 8000).")
+@click.option("--reload", is_flag=True, default=False, help="Auto-reload on source changes (dev mode).")
+def web(host: str, port: int, reload: bool) -> None:
+    """Start the TrustX web UI and REST API server."""
+    try:
+        import uvicorn
+    except ImportError:
+        click.echo("[trustx] uvicorn is required: pip install 'trustx-agent[dev]'")
+        raise SystemExit(1)
+
+    click.echo(f"[trustx] Web UI starting at  http://{host}:{port}")
+    click.echo(f"[trustx] API docs at          http://{host}:{port}/docs")
+    uvicorn.run(
+        "app:app",
+        host=host,
+        port=port,
+        reload=reload,
+        app_dir=str(Path(__file__).parent.parent),
+    )
 
 
 # ---------------------------------------------------------------------------
