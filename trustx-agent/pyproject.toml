@@ -15,6 +15,7 @@ dependencies = [
     "httpx>=0.25",
     "stripe>=7.0",
     "structlog>=23.0",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
