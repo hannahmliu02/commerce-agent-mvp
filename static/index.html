@@ -176,7 +176,7 @@ function openModal() {
 function closeModal() {
   document.getElementById('modal-backdrop').classList.add('hidden');
   document.getElementById('modal-backdrop').classList.remove('flex');
-  state = { session: null, step: 0, products: [], selectedProduct: null, query: '' };
+  state = { session: null, step: 0, products: [], cart: {}, query: '', discoveryDone: false, checkoutDone: false };
 }
 
 function setModalHeader(name, emoji, sessionId) {
@@ -226,7 +226,20 @@ async function startSession(agentKey) {
     body: JSON.stringify({ agent: agentKey }),
   });
   state.session = await res.json();
+  state.cart = {};
+  state.discoveryDone = false;
+  state.checkoutDone = false;
   setModalHeader(state.session.agent, state.session.emoji, state.session.session_id);
+
+  // Pre-load the full catalog so products are visible before any search
+  const catalogRes = await fetch(`${API}/sessions/${state.session.session_id}/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: '' }),
+  });
+  const catalogData = await catalogRes.json();
+  state.products = catalogData.products;
+
   state.step = 1;
   renderStep1();
 }
@@ -322,21 +335,75 @@ async function runWithChecks(checks, apiPromise, { title, subtitle = 'Running go
   return apiResult;
 }
 
-// ── Step 1 — Search ────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
+function cartTotal() {
+  return Object.values(state.cart).reduce((sum, v) => sum + v.product.price * v.quantity, 0);
+}
+
+function cartCount() {
+  return Object.values(state.cart).reduce((sum, v) => sum + v.quantity, 0);
+}
+
+// ── Step 1 — Browse + Cart ─────────────────────────────────────────────────
 function renderStep1() {
   updateStepBar(1);
+  const limits = state.session.limits;
+  const total = cartTotal();
+  const count = cartCount();
+  const capPct = Math.min(100, (total / limits.max_cumulative) * 100);
+  const perActionPct = Math.min(100, (total / limits.max_per_action) * 100);
+  const overCap = total > limits.max_cumulative;
+  const overPerAction = total > limits.max_per_action;
+  const hasItems = count > 0;
+
+  const capColor = capPct > 90 ? 'bg-red-500' : capPct > 70 ? 'bg-yellow-400' : 'bg-green-500';
+  const capTextColor = overCap ? 'text-red-600 font-semibold' : overPerAction ? 'text-yellow-600 font-semibold' : 'text-slate-500';
+
   setBody(`
-    <h2 class="font-semibold text-base mb-1">What would you like to find?</h2>
-    <p class="text-sm text-slate-400 mb-4">Search the catalog or browse everything.</p>
-    <input id="search-input" type="text" value="${state.query}"
-      placeholder="e.g. headphones, shoes…"
-      class="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40 mb-4" />
-    <div id="product-list" class="space-y-2 text-sm"></div>
+    <div class="flex gap-2 mb-3">
+      <input id="search-input" type="text" value="${state.query}"
+        placeholder="Search catalog…"
+        class="flex-1 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40" />
+      <button onclick="doSearch()" class="px-4 py-2 bg-brand text-white text-sm font-medium rounded-xl hover:bg-brand-dark transition-colors">Search</button>
+    </div>
+    <div id="product-list" class="space-y-1.5 mb-4"></div>
+
+    ${hasItems ? `
+    <div class="bg-slate-50 rounded-xl p-3 border border-slate-200">
+      <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Cart (${count} item${count !== 1 ? 's' : ''})</p>
+      <div id="cart-lines" class="space-y-1 mb-3">
+        ${Object.values(state.cart).map(v => `
+        <div class="flex items-center justify-between text-sm">
+          <span class="text-slate-700">${v.product.name}</span>
+          <div class="flex items-center gap-2">
+            <button onclick="changeQty('${v.product.id}', -1)" class="w-5 h-5 rounded bg-slate-200 hover:bg-slate-300 text-xs font-bold flex items-center justify-center">−</button>
+            <span class="w-4 text-center font-medium">${v.quantity}</span>
+            <button onclick="changeQty('${v.product.id}', 1)" class="w-5 h-5 rounded bg-slate-200 hover:bg-slate-300 text-xs font-bold flex items-center justify-center">+</button>
+            <span class="w-14 text-right text-slate-600">$${(v.product.price * v.quantity).toFixed(2)}</span>
+          </div>
+        </div>`).join('')}
+      </div>
+      <div class="flex justify-between text-sm font-semibold border-t border-slate-200 pt-2 mb-2">
+        <span>Total</span><span class="${overCap || overPerAction ? 'text-red-600' : 'text-slate-800'}">$${total.toFixed(2)}</span>
+      </div>
+      <div class="mb-1">
+        <div class="flex justify-between text-xs ${capTextColor} mb-1">
+          <span>Session cap</span><span>$${total.toFixed(2)} / $${limits.max_cumulative.toLocaleString()}</span>
+        </div>
+        <div class="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+          <div class="${capColor} h-full rounded-full transition-all" style="width:${capPct}%"></div>
+        </div>
+      </div>
+      ${overCap ? `<p class="text-xs text-red-600 mt-1">⚠ Cart exceeds session cap — payment will be blocked</p>` :
+        overPerAction ? `<p class="text-xs text-yellow-600 mt-1">⚠ Cart exceeds per-action limit ($${limits.max_per_action}) — payment will be blocked</p>` : ''}
+    </div>` : ''}
   `);
+
   setFooter(`
     <button onclick="closeModal()" class="px-4 py-2 text-sm text-slate-500 hover:text-slate-700">Cancel</button>
-    <button onclick="doSearch()" class="px-5 py-2 bg-brand text-white text-sm font-medium rounded-xl hover:bg-brand-dark transition-colors">Search</button>
+    ${hasItems ? `<button onclick="proceedToCheckout()" class="px-5 py-2 bg-brand text-white text-sm font-medium rounded-xl hover:bg-brand-dark transition-colors">Checkout (${count}) →</button>` : ''}
   `);
+
   document.getElementById('search-input').addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
   if (state.products.length) renderProductList(state.products);
 }
@@ -345,22 +412,21 @@ async function doSearch() {
   const query = document.getElementById('search-input').value.trim();
   state.query = query;
 
-  // Run governance-checked discovery step (blocks on prompt injection)
-  const govRes = await fetch(`${API}/sessions/${state.session.session_id}/steps/product_discovery`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
-  });
-  if (!govRes.ok) {
-    const err = await govRes.json();
-    setBody(`
-      <div class="text-center py-6">
-        <p class="text-3xl mb-2">🛡️</p>
-        <p class="font-semibold text-red-600">Query blocked by governance</p>
-        <p class="text-sm text-slate-400 mt-1">${err.detail || 'Request blocked'}</p>
-      </div>`);
-    setFooter(`<button onclick="renderStep1()" class="px-4 py-2 text-sm text-brand">← Try again</button>`);
-    return;
+  // First search: run governance step with animated checklist.
+  // Subsequent searches skip the step (state machine already advanced) and just filter the catalog.
+  if (!state.discoveryDone) {
+    const r = await fetch(`${API}/sessions/${state.session.session_id}/steps/product_discovery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+    if (!r.ok) {
+      const e = await r.json();
+      setBody(`<p class="text-red-500 text-sm">Search blocked: ${errMsg(e)}</p>`);
+      setFooter(`<button onclick="renderStep1()" class="px-4 py-2 text-sm text-brand">← Try again</button>`);
+      return;
+    }
+    state.discoveryDone = true;
   }
 
   const res = await fetch(`${API}/sessions/${state.session.session_id}/search`, {
@@ -370,44 +436,111 @@ async function doSearch() {
   });
   const data = await res.json();
   state.products = data.products;
-
   renderStep1();
-  renderProductList(data.products);
 }
 
 function renderProductList(products) {
   const list = document.getElementById('product-list');
   if (!list) return;
-  list.innerHTML = products.map(p => `
-    <div onclick="selectProduct('${p.id}')"
-      class="flex items-center justify-between p-3 rounded-xl border border-slate-100 hover:border-brand/40 hover:bg-brand/5 cursor-pointer transition-all group">
+  list.innerHTML = products.map(p => {
+    const inCart = state.cart[p.id];
+    return `
+    <div class="flex items-center justify-between p-2.5 rounded-xl border ${inCart ? 'border-brand/30 bg-brand/5' : 'border-slate-100'} transition-all">
       <div>
-        <p class="font-medium group-hover:text-brand transition-colors">${p.name}</p>
-        <p class="text-xs text-slate-400">${p.category} · ID: ${p.id}</p>
+        <p class="text-sm font-medium text-slate-700">${p.name}</p>
+        <p class="text-xs text-slate-400">${p.category}</p>
       </div>
-      <span class="font-semibold text-slate-700">$${p.price.toFixed(2)}</span>
-    </div>
-  `).join('');
+      <div class="flex items-center gap-2">
+        <span class="text-sm font-semibold text-slate-700">$${p.price.toFixed(2)}</span>
+        <button onclick="addToCart('${p.id}')"
+          class="px-3 py-1 text-xs font-medium rounded-lg ${inCart ? 'bg-brand text-white' : 'bg-slate-100 hover:bg-brand/10 text-slate-600'} transition-colors">
+          ${inCart ? `In cart (${inCart.quantity})` : 'Add'}
+        </button>
+      </div>
+    </div>`;
+  }).join('');
 }
 
-// ── Step 2 — Select ────────────────────────────────────────────────────────
-async function selectProduct(productId) {
-  state.selectedProduct = state.products.find(p => p.id === productId);
-  updateStepBar(2);
-  setBody(`<p class="text-slate-400 text-sm">Selecting product…</p>`);
-  setFooter('');
-
-  const res = await fetch(`${API}/sessions/${state.session.session_id}/steps/product_selection`, {
+async function addToCart(productId) {
+  await fetch(`${API}/sessions/${state.session.session_id}/cart/items`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ product_id: productId }),
   });
-  if (!res.ok) {
-    const err = await res.json();
-    setBody(`<p class="text-red-500 text-sm">Error: ${err.detail}</p>`);
+  const product = state.products.find(p => p.id === productId);
+  if (state.cart[productId]) {
+    state.cart[productId].quantity += 1;
+  } else {
+    state.cart[productId] = { product, quantity: 1 };
+  }
+  renderStep1();
+}
+
+async function changeQty(productId, delta) {
+  if (delta < 0) {
+    await fetch(`${API}/sessions/${state.session.session_id}/cart/items/${productId}`, { method: 'DELETE' });
+    if (state.cart[productId]) {
+      state.cart[productId].quantity -= 1;
+      if (state.cart[productId].quantity <= 0) delete state.cart[productId];
+    }
+  } else {
+    await fetch(`${API}/sessions/${state.session.session_id}/cart/items`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ product_id: productId }),
+    });
+    if (state.cart[productId]) state.cart[productId].quantity += 1;
+  }
+  renderStep1();
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+// Safely extract a readable string from a FastAPI error response.
+// detail can be a plain string or a list of Pydantic validation error objects.
+function errMsg(err) {
+  if (!err) return 'Unknown error';
+  if (typeof err.detail === 'string') return err.detail;
+  if (Array.isArray(err.detail)) return err.detail.map(e => e.msg || JSON.stringify(e)).join('; ');
+  if (err.detail) return JSON.stringify(err.detail);
+  return JSON.stringify(err);
+}
+
+// ── Step 2 — Checkout / Approve ────────────────────────────────────────────
+async function proceedToCheckout() {
+  // If already checked out (state machine already advanced), go straight to review
+  if (state.checkoutDone) {
+    renderStep3();
+    return;
+  }
+
+  updateStepBar(2);
+  setBody(`<p class="text-slate-400 text-sm">Preparing checkout…</p>`);
+  setFooter('');
+
+  // Ensure discovery step ran before we can select — run with empty query if needed
+  if (!state.discoveryDone) {
+    const govRes = await fetch(`${API}/sessions/${state.session.session_id}/steps/product_discovery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: '' }),
+    });
+    if (!govRes.ok) {
+      const err = await govRes.json();
+      setBody(`<p class="text-red-500 text-sm">Could not start session: ${errMsg(err)}</p>`);
+      setFooter(`<button onclick="renderStep1()" class="px-4 py-2 text-sm text-brand">← Back</button>`);
+      return;
+    }
+    state.discoveryDone = true;
+  }
+
+  const selRes = await fetch(`${API}/sessions/${state.session.session_id}/steps/product_selection`, { method: 'POST' });
+  if (!selRes.ok) {
+    const err = await selRes.json();
+    setBody(`<p class="text-red-500 text-sm">Checkout error: ${errMsg(err)}</p>`);
     setFooter(`<button onclick="renderStep1()" class="px-4 py-2 text-sm text-brand">← Back</button>`);
     return;
   }
+  state.checkoutDone = true;
   state.step = 2;
   renderStep3();
 }
@@ -415,31 +548,43 @@ async function selectProduct(productId) {
 // ── Step 3 — Approve ───────────────────────────────────────────────────────
 function renderStep3() {
   updateStepBar(3);
-  const p = state.selectedProduct;
   const limits = state.session.limits;
-  const needsApproval = p.price > limits.requires_approval_above;
+  const total = cartTotal();
+  const needsApproval = total > limits.requires_approval_above;
+  const overCap = total > limits.max_cumulative;
+  const overPerAction = total > limits.max_per_action;
+
+  const itemRows = Object.values(state.cart).map(v => `
+    <div class="flex justify-between text-sm">
+      <span class="text-slate-600">${v.product.name} × ${v.quantity}</span>
+      <span>$${(v.product.price * v.quantity).toFixed(2)}</span>
+    </div>`).join('');
+
+  const warningHtml = overCap
+    ? `<div class="flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">
+        <span>✗</span><span>Cart total exceeds session cap ($${limits.max_cumulative.toLocaleString()}) — payment will be blocked by the mandate enforcer.</span></div>`
+    : overPerAction
+    ? `<div class="flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-xl p-3">
+        <span>✗</span><span>Cart total exceeds per-action limit ($${limits.max_per_action.toLocaleString()}) — payment will be blocked by the mandate enforcer.</span></div>`
+    : needsApproval
+    ? `<div class="flex items-start gap-2 text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-xl p-3">
+        <span>⚠</span><span>Total exceeds $${limits.requires_approval_above} approval threshold — your confirmation is required.</span></div>`
+    : `<div class="flex items-start gap-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-xl p-3">
+        <span>✓</span><span>Total is within all limits — auto-approved.</span></div>`;
+
   setBody(`
     <h2 class="font-semibold text-base mb-1">Review your order</h2>
-    <p class="text-sm text-slate-400 mb-4">Confirm the details before payment.</p>
-    <div class="bg-slate-50 rounded-xl p-4 space-y-2 text-sm mb-4">
-      <div class="flex justify-between"><span class="text-slate-500">Product</span><span class="font-medium">${p.name}</span></div>
-      <div class="flex justify-between"><span class="text-slate-500">Category</span><span>${p.category}</span></div>
-      <div class="flex justify-between"><span class="text-slate-500">Product ID</span><span class="font-mono text-xs">${p.id}</span></div>
-      <div class="flex justify-between border-t border-slate-200 pt-2 mt-2"><span class="font-semibold">Total</span><span class="font-bold text-green-600">$${p.price.toFixed(2)}</span></div>
+    <p class="text-sm text-slate-400 mb-3">Confirm the details before payment.</p>
+    <div class="bg-slate-50 rounded-xl p-4 space-y-1.5 text-sm mb-3">
+      ${itemRows}
+      <div class="flex justify-between font-semibold border-t border-slate-200 pt-2 mt-1">
+        <span>Total</span><span class="${overCap || overPerAction ? 'text-red-600' : 'text-green-600'}">$${total.toFixed(2)}</span>
+      </div>
     </div>
-    ${needsApproval ? `
-    <div class="flex items-start gap-2 text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 rounded-xl p-3">
-      <span>⚠</span>
-      <span>Amount exceeds $${limits.requires_approval_above} approval threshold — your explicit confirmation is required.</span>
-    </div>` : `
-    <div class="flex items-start gap-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-xl p-3">
-      <span>✓</span>
-      <span>Amount is below the $${limits.requires_approval_above} threshold — this can be auto-approved.</span>
-    </div>`}
+    ${warningHtml}
   `);
   setFooter(`
-    <button onclick="renderStep1()" class="px-4 py-2 text-sm text-slate-500 hover:text-slate-700">← Back</button>
-    <button onclick="doApprove(false)" class="px-4 py-2 text-sm text-red-500 hover:text-red-700">Decline</button>
+    <button onclick="doApprove(false)" class="px-4 py-2 text-sm text-red-500 hover:text-red-700">Decline & cancel</button>
     <button onclick="doApprove(true)" class="px-5 py-2 bg-brand text-white text-sm font-medium rounded-xl hover:bg-brand-dark transition-colors">Confirm purchase</button>
   `);
 }
@@ -454,6 +599,13 @@ async function doApprove(confirmed) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ confirmed }),
   });
+  if (!res.ok) {
+    const err = await res.json();
+    console.error('consumer_approval failed:', err);
+    setBody(`<p class="text-red-500 text-sm">Approval error: ${errMsg(err)}</p>`);
+    setFooter(`<button onclick="renderStep3()" class="px-4 py-2 text-sm text-brand">← Back</button>`);
+    return;
+  }
   const data = await res.json();
   if (data.cancelled) {
     setBody(`
@@ -479,13 +631,11 @@ async function renderStep4() {
     { label: 'Mandate Enforcer',        detail: 'Verifying payment amount within session cap' },
     { label: 'TAP Signature',           detail: 'Signing request with RFC 9421 (Ed25519)' },
     { label: 'MAP Token',               detail: 'Validating Mastercard Agentic Token governance metadata' },
-    { label: 'Stripe Payment',          detail: `Charging $${state.selectedProduct.price.toFixed(2)} via PaymentIntent` },
+    { label: 'Stripe Payment',          detail: `Charging $${cartTotal().toFixed(2)} via PaymentIntent` },
   ];
 
   const paymentCall = fetch(`${API}/sessions/${state.session.session_id}/steps/payment_execution`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ amount: state.selectedProduct.price }),
   }).then(async r => {
     if (!r.ok) { const e = await r.json(); throw new Error(e.detail || 'Payment failed'); }
     return r.json();
@@ -497,7 +647,7 @@ async function renderStep4() {
       subtitle: 'All governance checks must pass before funds move',
     });
   } catch (err) {
-    setBody(`<p class="text-red-500 text-sm">Payment error: ${err.message}</p>`);
+    setBody(`<p class="text-red-500 text-sm">Payment error: ${err.message || errMsg(err)}</p>`);
     setFooter(`<button onclick="closeModal()" class="px-5 py-2 bg-slate-100 text-slate-700 text-sm rounded-xl">Close</button>`);
     return;
   }
@@ -522,7 +672,7 @@ async function renderStep5() {
     { label: 'Mandate Enforcer',        detail: `Payment within session cap` },
     { label: 'TAP Signature',           detail: 'RFC 9421 request signature verified' },
     { label: 'MAP Token',               detail: 'Mastercard Agentic Token governance passed' },
-    { label: 'Stripe Payment',          detail: `$${state.selectedProduct.price.toFixed(2)} charged via PaymentIntent` },
+    { label: 'Stripe Payment',          detail: `$${cartTotal().toFixed(2)} charged via PaymentIntent` },
   ];
 
   const rows = paymentChecks.map(c => `
@@ -538,7 +688,7 @@ async function renderStep5() {
     <div class="text-center mb-5">
       <div class="inline-flex items-center justify-center w-14 h-14 rounded-full bg-green-100 text-3xl mb-3">✓</div>
       <h2 class="font-semibold text-lg">Purchase complete</h2>
-      <p class="text-sm text-slate-400 mt-1">${state.selectedProduct.name} · <span class="font-medium text-slate-600">$${state.selectedProduct.price.toFixed(2)}</span></p>
+      <p class="text-sm text-slate-400 mt-1">${cartCount()} item${cartCount() !== 1 ? 's' : ''} · <span class="font-medium text-slate-600">$${cartTotal().toFixed(2)}</span></p>
     </div>
     <div class="bg-slate-50 rounded-xl px-4 py-1">
       <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider pt-3 pb-1">Payment governance checks</p>

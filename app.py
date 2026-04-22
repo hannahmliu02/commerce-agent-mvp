@@ -52,8 +52,9 @@ if _STATIC.exists():
     app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
 # In-memory session store  {session_id -> (SessionManager, InMemoryAuditBackend)}
-# session_id -> (SessionManager, InMemoryAuditBackend, selected_product_dict | None)
-_sessions: dict[str, tuple[SessionManager, InMemoryAuditBackend, Any]] = {}
+# session_id -> (SessionManager, InMemoryAuditBackend, cart)
+# cart: {product_id: {"product": {...}, "quantity": int}}
+_sessions: dict[str, tuple[SessionManager, InMemoryAuditBackend, dict]] = {}
 
 # ---------------------------------------------------------------------------
 # Mock catalog (mirrors CLI)
@@ -80,7 +81,7 @@ class SearchRequest(BaseModel):
     query: str = ""
 
 
-class SelectProductRequest(BaseModel):
+class CartItemRequest(BaseModel):
     product_id: str
 
 
@@ -164,7 +165,7 @@ async def create_session(body: StartSessionRequest):
         audit=AuditLogger(audit_backend),
     )
     result = await mgr.start()
-    _sessions[session_id] = (mgr, audit_backend, None)
+    _sessions[session_id] = (mgr, audit_backend, {})
     return {
         "session_id": session_id,
         "agent": persona.name,
@@ -212,29 +213,73 @@ async def step_product_discovery(session_id: str, body: SearchRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/sessions/{session_id}/steps/product_selection")
-async def step_product_selection(session_id: str, body: SelectProductRequest):
-    mgr, audit_backend, _ = _get_session(session_id)
+# ---------------------------------------------------------------------------
+# Cart management
+# ---------------------------------------------------------------------------
+
+def _cart_total(cart: dict) -> float:
+    return sum(v["product"]["price"] * v["quantity"] for v in cart.values())
+
+
+@app.get("/sessions/{session_id}/cart")
+async def get_cart(session_id: str):
+    _, _, cart = _get_session(session_id)
+    items = [{"product": v["product"], "quantity": v["quantity"]} for v in cart.values()]
+    return {"items": items, "total": _cart_total(cart), "count": sum(v["quantity"] for v in cart.values())}
+
+
+@app.post("/sessions/{session_id}/cart/items")
+async def add_to_cart(session_id: str, body: CartItemRequest):
+    mgr, audit_backend, cart = _get_session(session_id)
     product = next((p for p in MOCK_CATALOG if p["id"] == body.product_id), None)
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
+    if body.product_id in cart:
+        cart[body.product_id]["quantity"] += 1
+    else:
+        cart[body.product_id] = {"product": product, "quantity": 1}
+    _sessions[session_id] = (mgr, audit_backend, cart)
+    return {"items": [{"product": v["product"], "quantity": v["quantity"]} for v in cart.values()],
+            "total": _cart_total(cart), "count": sum(v["quantity"] for v in cart.values())}
+
+
+@app.delete("/sessions/{session_id}/cart/items/{product_id}")
+async def remove_from_cart(session_id: str, product_id: str):
+    mgr, audit_backend, cart = _get_session(session_id)
+    if product_id not in cart:
+        raise HTTPException(status_code=404, detail="Item not in cart")
+    if cart[product_id]["quantity"] > 1:
+        cart[product_id]["quantity"] -= 1
+    else:
+        del cart[product_id]
+    _sessions[session_id] = (mgr, audit_backend, cart)
+    return {"items": [{"product": v["product"], "quantity": v["quantity"]} for v in cart.values()],
+            "total": _cart_total(cart), "count": sum(v["quantity"] for v in cart.values())}
+
+
+# ---------------------------------------------------------------------------
+# Steps
+# ---------------------------------------------------------------------------
+
+@app.post("/sessions/{session_id}/steps/product_selection")
+async def step_product_selection(session_id: str):
+    """Advance the state machine past product_selection using the current cart."""
+    mgr, audit_backend, cart = _get_session(session_id)
+    if not cart:
+        raise HTTPException(status_code=400, detail="Cart is empty")
+    # Pass the first product id; the mandate enforcer checks the total at approval
+    first_id = next(iter(cart))
     try:
-        result = await mgr.execute_step("product_selection", {"product_id": body.product_id})
-        # Store selected product so later steps can read the price
-        _sessions[session_id] = (mgr, audit_backend, product)
-        return {
-            "ok": True,
-            "next_step": result.get("next_step"),
-            "product": product,
-        }
+        result = await mgr.execute_step("product_selection", {"product_id": first_id})
+        return {"ok": True, "next_step": result.get("next_step"), "cart_total": _cart_total(cart)}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/sessions/{session_id}/steps/consumer_approval")
 async def step_consumer_approval(session_id: str, body: ApprovalRequest):
-    mgr, audit_backend, selected_product = _get_session(session_id)
-    total = selected_product["price"] if selected_product else 79.99
+    mgr, audit_backend, cart = _get_session(session_id)
+    total = _cart_total(cart) if cart else 79.99
     try:
         result = await mgr.execute_step(
             "consumer_approval",
@@ -253,11 +298,13 @@ async def step_consumer_approval(session_id: str, body: ApprovalRequest):
 
 
 @app.post("/sessions/{session_id}/steps/payment_execution")
-async def step_payment_execution(session_id: str, body: PaymentRequest):
-    mgr, _, _product = _get_session(session_id)
+async def step_payment_execution(session_id: str):
+    """Execute payment for the full cart total."""
+    mgr, _, cart = _get_session(session_id)
+    total = _cart_total(cart)
     try:
-        result = await mgr.execute_step("payment_execution", {"amount": body.amount})
-        return {"ok": True, "next_step": result.get("next_step"), "amount": body.amount}
+        result = await mgr.execute_step("payment_execution", {"amount": total})
+        return {"ok": True, "next_step": result.get("next_step"), "amount": total}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
